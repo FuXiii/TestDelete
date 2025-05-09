@@ -94,20 +94,28 @@ public:
 
 	// multiview
 	VkPhysicalDeviceMultiviewFeaturesKHR physicalDeviceMultiviewFeatures{};
+	VkPhysicalDeviceMultiviewPropertiesKHR physicalDeviceMultiviewProperties{};
 
 	struct MultiviewPass {
 		//VkPhysicalDeviceMultiviewPropertiesKHR::maxMultiviewViewCount
-		//一次最多绘制multiview有显示，为了解除该限制，只能创建多个framebuffer
-		//多次渲染，每次绑定一个framebuffer，一个framebuffer渲染多个multiview
+		//涓�娆℃渶澶氱粯鍒秏ultiview鏈夋樉绀猴紝涓轰簡瑙ｉ櫎璇ラ檺鍒讹紝鍙兘鍒涘缓澶氫釜framebuffer
+		//澶氭娓叉煋锛屾瘡娆＄粦瀹氫竴涓猣ramebuffer锛屼竴涓猣ramebuffer娓叉煋澶氫釜multiview
 		struct FrameBufferAttachment {
 			VkImage image{ VK_NULL_HANDLE };
 			VkDeviceMemory memory{ VK_NULL_HANDLE };
 			VkImageView view{ VK_NULL_HANDLE };
+
+			uint32_t arrayLayers = 0;
 		};
 
 		std::vector<FrameBufferAttachment> colors;
 		std::vector<FrameBufferAttachment> depths;
+
+		FrameBufferAttachment remnantColor;
+		FrameBufferAttachment remnantDepth;
+
 		std::vector<VkFramebuffer> frameBuffers;
+		VkFramebuffer remnantFrameBuffer{ VK_NULL_HANDLE };
 
 	}multiviewPass;
 
@@ -153,9 +161,9 @@ public:
 			enabledInstanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 
 			// Enable required extension features
-			physicalDeviceMultiviewFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES_KHR;
-			physicalDeviceMultiviewFeatures.multiview = VK_TRUE;
-			deviceCreatepNextChain = &physicalDeviceMultiviewFeatures;
+			this->physicalDeviceMultiviewFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES_KHR;
+			this->physicalDeviceMultiviewFeatures.multiview = VK_TRUE;
+			deviceCreatepNextChain = &(this->physicalDeviceMultiviewFeatures);
 		}
 	}
 
@@ -1431,15 +1439,339 @@ public:
 
 		if (extFeatures.multiview == VK_TRUE && extProps.maxMultiviewViewCount > 0)
 		{
+			{
+				physicalDeviceMultiviewProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES_KHR;
+				physicalDeviceMultiviewProperties.pNext = nullptr;
+				physicalDeviceMultiviewProperties.maxMultiviewViewCount = extProps.maxMultiviewViewCount;
+				physicalDeviceMultiviewProperties.maxMultiviewInstanceIndex = extProps.maxMultiviewInstanceIndex;
+			}
+
 			return true;
 		}
 
 		return false;
 	}
 
-	void prepareMultiview()
+	bool prepareMultiview()
 	{
+		auto check_row_and_column = [&]()->bool
+		{
+			if (row > 0 && column > 0)
+			{
+				return true;
+			}
+			return false;
+		};
 
+		if (check_row_and_column())
+		{
+			std::size_t all_view_count = row * column;
+
+			std::size_t frame_buffer_count = all_view_count / this->physicalDeviceMultiviewProperties.maxMultiviewViewCount;
+			std::size_t remnant = all_view_count - frame_buffer_count * this->physicalDeviceMultiviewProperties.maxMultiviewViewCount;
+
+			for (size_t frame_buffer_create_index = 0; frame_buffer_create_index < frame_buffer_count; frame_buffer_create_index++)
+			{
+				/*
+					Layered depth/stencil framebuffer
+				*/
+				{
+					MultiviewPass::FrameBufferAttachment depth_attachment = {};
+					depth_attachment.arrayLayers = this->physicalDeviceMultiviewProperties.maxMultiviewViewCount;
+
+					VkImageCreateInfo imageCI = vks::initializers::imageCreateInfo();
+					imageCI.imageType = VK_IMAGE_TYPE_2D;
+					imageCI.format = depthFormat;
+					imageCI.extent = { width, height, 1 };
+					imageCI.mipLevels = 1;
+					imageCI.arrayLayers = depth_attachment.arrayLayers;
+					imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+					imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+					imageCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+					imageCI.flags = 0;
+
+					VK_CHECK_RESULT(vkCreateImage(device, &imageCI, nullptr, &depth_attachment.image));
+
+					VkMemoryRequirements memReqs;
+					vkGetImageMemoryRequirements(device, depth_attachment.image, &memReqs);
+
+					VkMemoryAllocateInfo memAllocInfo{};
+					memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+					memAllocInfo.allocationSize = 0;
+					memAllocInfo.memoryTypeIndex = 0;
+
+					VkImageViewCreateInfo depthStencilViewCI = {};
+					depthStencilViewCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+					depthStencilViewCI.pNext = NULL;
+					depthStencilViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+					depthStencilViewCI.format = depthFormat;
+					depthStencilViewCI.flags = 0;
+					depthStencilViewCI.subresourceRange = {};
+					depthStencilViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+					if (depthFormat >= VK_FORMAT_D16_UNORM_S8_UINT) {
+						depthStencilViewCI.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+					}
+					depthStencilViewCI.subresourceRange.baseMipLevel = 0;
+					depthStencilViewCI.subresourceRange.levelCount = 1;
+					depthStencilViewCI.subresourceRange.baseArrayLayer = 0;
+					depthStencilViewCI.subresourceRange.layerCount = imageCI.arrayLayers;
+					depthStencilViewCI.image = depth_attachment.image;
+
+					memAllocInfo.allocationSize = memReqs.size;
+					memAllocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+					VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &depth_attachment.memory));
+					VK_CHECK_RESULT(vkBindImageMemory(device, depth_attachment.image, depth_attachment.memory, 0));
+					VK_CHECK_RESULT(vkCreateImageView(device, &depthStencilViewCI, nullptr, &depth_attachment.view));
+
+					multiviewPass.depths.push_back(depth_attachment);
+				}
+
+				/*
+					Layered color attachment
+				*/
+				{
+					MultiviewPass::FrameBufferAttachment color_attachment = {};
+					color_attachment.arrayLayers = this->physicalDeviceMultiviewProperties.maxMultiviewViewCount;
+
+					VkImageCreateInfo imageCI = vks::initializers::imageCreateInfo();
+					imageCI.imageType = VK_IMAGE_TYPE_2D;
+					imageCI.format = swapChain.colorFormat;
+					imageCI.extent = { width, height, 1 };
+					imageCI.mipLevels = 1;
+					imageCI.arrayLayers = color_attachment.arrayLayers;
+					imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+					imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+					imageCI.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+					VK_CHECK_RESULT(vkCreateImage(device, &imageCI, nullptr, &color_attachment.image));
+
+					VkMemoryRequirements memReqs;
+					vkGetImageMemoryRequirements(device, color_attachment.image, &memReqs);
+
+					VkMemoryAllocateInfo memoryAllocInfo = vks::initializers::memoryAllocateInfo();
+					memoryAllocInfo.allocationSize = memReqs.size;
+					memoryAllocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+					VK_CHECK_RESULT(vkAllocateMemory(device, &memoryAllocInfo, nullptr, &color_attachment.memory));
+					VK_CHECK_RESULT(vkBindImageMemory(device, color_attachment.image, color_attachment.memory, 0));
+
+					VkImageViewCreateInfo imageViewCI = vks::initializers::imageViewCreateInfo();
+					imageViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+					imageViewCI.format = swapChain.colorFormat;
+					imageViewCI.flags = 0;
+					imageViewCI.subresourceRange = {};
+					imageViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					imageViewCI.subresourceRange.baseMipLevel = 0;
+					imageViewCI.subresourceRange.levelCount = 1;
+					imageViewCI.subresourceRange.baseArrayLayer = 0;
+					imageViewCI.subresourceRange.layerCount = imageCI.arrayLayers;
+					imageViewCI.image = color_attachment.image;
+					VK_CHECK_RESULT(vkCreateImageView(device, &imageViewCI, nullptr, &color_attachment.view));
+
+					multiviewPass.colors.push_back(color_attachment);
+				}
+			}
+
+			if (remnant > 0)
+			{
+				/*
+					Layered depth/stencil framebuffer
+				*/
+				{
+					MultiviewPass::FrameBufferAttachment depth_attachment = {};
+					depth_attachment.arrayLayers = remnant;
+
+					VkImageCreateInfo imageCI = vks::initializers::imageCreateInfo();
+					imageCI.imageType = VK_IMAGE_TYPE_2D;
+					imageCI.format = depthFormat;
+					imageCI.extent = { width, height, 1 };
+					imageCI.mipLevels = 1;
+					imageCI.arrayLayers = depth_attachment.arrayLayers;
+					imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+					imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+					imageCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+					imageCI.flags = 0;
+
+					VK_CHECK_RESULT(vkCreateImage(device, &imageCI, nullptr, &depth_attachment.image));
+
+					VkMemoryRequirements memReqs;
+					vkGetImageMemoryRequirements(device, depth_attachment.image, &memReqs);
+
+					VkMemoryAllocateInfo memAllocInfo{};
+					memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+					memAllocInfo.allocationSize = 0;
+					memAllocInfo.memoryTypeIndex = 0;
+
+					VkImageViewCreateInfo depthStencilViewCI = {};
+					depthStencilViewCI.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+					depthStencilViewCI.pNext = NULL;
+					depthStencilViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+					depthStencilViewCI.format = depthFormat;
+					depthStencilViewCI.flags = 0;
+					depthStencilViewCI.subresourceRange = {};
+					depthStencilViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+					if (depthFormat >= VK_FORMAT_D16_UNORM_S8_UINT) {
+						depthStencilViewCI.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+					}
+					depthStencilViewCI.subresourceRange.baseMipLevel = 0;
+					depthStencilViewCI.subresourceRange.levelCount = 1;
+					depthStencilViewCI.subresourceRange.baseArrayLayer = 0;
+					depthStencilViewCI.subresourceRange.layerCount = imageCI.arrayLayers;
+					depthStencilViewCI.image = depth_attachment.image;
+
+					memAllocInfo.allocationSize = memReqs.size;
+					memAllocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+					VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &depth_attachment.memory));
+					VK_CHECK_RESULT(vkBindImageMemory(device, depth_attachment.image, depth_attachment.memory, 0));
+					VK_CHECK_RESULT(vkCreateImageView(device, &depthStencilViewCI, nullptr, &depth_attachment.view));
+
+					multiviewPass.remnantDepth = depth_attachment;
+				}
+
+				/*
+					Layered color attachment
+				*/
+				{
+					MultiviewPass::FrameBufferAttachment color_attachment = {};
+					color_attachment.arrayLayers = remnant;
+
+					VkImageCreateInfo imageCI = vks::initializers::imageCreateInfo();
+					imageCI.imageType = VK_IMAGE_TYPE_2D;
+					imageCI.format = swapChain.colorFormat;
+					imageCI.extent = { width, height, 1 };
+					imageCI.mipLevels = 1;
+					imageCI.arrayLayers = color_attachment.arrayLayers;
+					imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+					imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+					imageCI.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+					VK_CHECK_RESULT(vkCreateImage(device, &imageCI, nullptr, &color_attachment.image));
+
+					VkMemoryRequirements memReqs;
+					vkGetImageMemoryRequirements(device, color_attachment.image, &memReqs);
+
+					VkMemoryAllocateInfo memoryAllocInfo = vks::initializers::memoryAllocateInfo();
+					memoryAllocInfo.allocationSize = memReqs.size;
+					memoryAllocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+					VK_CHECK_RESULT(vkAllocateMemory(device, &memoryAllocInfo, nullptr, &color_attachment.memory));
+					VK_CHECK_RESULT(vkBindImageMemory(device, color_attachment.image, color_attachment.memory, 0));
+
+					VkImageViewCreateInfo imageViewCI = vks::initializers::imageViewCreateInfo();
+					imageViewCI.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+					imageViewCI.format = swapChain.colorFormat;
+					imageViewCI.flags = 0;
+					imageViewCI.subresourceRange = {};
+					imageViewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					imageViewCI.subresourceRange.baseMipLevel = 0;
+					imageViewCI.subresourceRange.levelCount = 1;
+					imageViewCI.subresourceRange.baseArrayLayer = 0;
+					imageViewCI.subresourceRange.layerCount = imageCI.arrayLayers;
+					imageViewCI.image = color_attachment.image;
+					VK_CHECK_RESULT(vkCreateImageView(device, &imageViewCI, nullptr, &color_attachment.view));
+
+					multiviewPass.remnantColor = color_attachment;
+				}
+			}
+
+			/*
+				Framebuffer
+			*/
+			{
+				for (size_t frame_buffer_index = 0; frame_buffer_index < multiviewPass.colors.size(); frame_buffer_index++)
+				{
+					VkFramebuffer multiview_framebuffer = VK_NULL_HANDLE;
+
+					VkImageView attachments[2];
+					attachments[0] = multiviewPass.colors[frame_buffer_index].view;
+					attachments[1] = multiviewPass.depths[frame_buffer_index].view;
+
+					VkFramebufferCreateInfo framebufferCI = vks::initializers::framebufferCreateInfo();
+					framebufferCI.renderPass = renderPass;
+					framebufferCI.attachmentCount = 2;
+					framebufferCI.pAttachments = attachments;
+					framebufferCI.width = width;
+					framebufferCI.height = height;
+					framebufferCI.layers = 1;
+					VK_CHECK_RESULT(vkCreateFramebuffer(device, &framebufferCI, nullptr, &multiview_framebuffer));
+
+					multiviewPass.frameBuffers.push_back(multiview_framebuffer);
+				}
+
+				if (multiviewPass.remnantColor.view != VK_NULL_HANDLE)
+				{
+					VkFramebuffer multiview_framebuffer = VK_NULL_HANDLE;
+
+					VkImageView attachments[2];
+					attachments[0] = multiviewPass.remnantColor.view;
+					attachments[1] = multiviewPass.remnantDepth.view;
+
+					VkFramebufferCreateInfo framebufferCI = vks::initializers::framebufferCreateInfo();
+					framebufferCI.renderPass = renderPass;
+					framebufferCI.attachmentCount = 2;
+					framebufferCI.pAttachments = attachments;
+					framebufferCI.width = width;
+					framebufferCI.height = height;
+					framebufferCI.layers = 1;
+					VK_CHECK_RESULT(vkCreateFramebuffer(device, &framebufferCI, nullptr, &multiview_framebuffer));
+
+					multiviewPass.remnantFrameBuffer = multiview_framebuffer;
+				}
+			}
+
+			return true;
+		}
+
+		return false;
+	}
+
+	virtual void windowResized()
+	{
+		for (auto& item : multiviewPass.frameBuffers)
+		{
+			vkDestroyFramebuffer(device, item, nullptr);
+		}
+
+		if (multiviewPass.remnantFrameBuffer != VK_NULL_HANDLE)
+		{
+			vkDestroyFramebuffer(device, multiviewPass.remnantFrameBuffer, nullptr);
+		}
+
+		for (auto& item : multiviewPass.colors)
+		{
+			vkDestroyImageView(device, item.view, nullptr);
+			vkDestroyImage(device, item.image, nullptr);
+			vkFreeMemory(device, item.memory, nullptr);
+		}
+
+		for (auto& item : multiviewPass.depths)
+		{
+			vkDestroyImageView(device, item.view, nullptr);
+			vkDestroyImage(device, item.image, nullptr);
+			vkFreeMemory(device, item.memory, nullptr);
+		}
+
+		if (multiviewPass.remnantColor.view != VK_NULL_HANDLE)
+		{
+			vkDestroyImageView(device, multiviewPass.remnantColor.view, nullptr);
+			vkDestroyImage(device, multiviewPass.remnantColor.image, nullptr);
+			vkFreeMemory(device, multiviewPass.remnantColor.memory, nullptr);
+		}
+
+		if (multiviewPass.remnantDepth.view != VK_NULL_HANDLE)
+		{
+			vkDestroyImageView(device, multiviewPass.remnantDepth.view, nullptr);
+			vkDestroyImage(device, multiviewPass.remnantDepth.image, nullptr);
+			vkFreeMemory(device, multiviewPass.remnantDepth.memory, nullptr);
+		}
+
+		multiviewPass.colors.clear();
+		multiviewPass.depths.clear();
+		multiviewPass.frameBuffers.clear();
+		multiviewPass.remnantColor = {};
+		multiviewPass.remnantDepth = {};
+		multiviewPass.remnantFrameBuffer = VK_NULL_HANDLE;
+
+		prepareMultiview();
+
+		resized = false;
+		buildCommandBuffers();
 	}
 
 	void prepare()
@@ -1454,7 +1786,11 @@ public:
 			}
 			else
 			{
-				prepareMultiview();
+				if (!prepareMultiview())
+				{
+					vks::tools::exitFatal("Could not prepare multiview : \n" + vks::tools::errorString(VkResult::VK_ERROR_INITIALIZATION_FAILED), VkResult::VK_ERROR_INITIALIZATION_FAILED);
+					return;
+				}
 			}
 		}
 
@@ -1468,6 +1804,7 @@ public:
 		buildCommandBuffers();
 		prepared = true;
 	}
+
 
 	virtual void render()
 	{
