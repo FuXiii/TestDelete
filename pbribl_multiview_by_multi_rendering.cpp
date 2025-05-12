@@ -186,19 +186,24 @@ public:
 					return true;
 				}
 				return false;
-			}
+			};
 
 			if (is_row_and_column_valid())
 			{
 				for (size_t row_index = 0; row_index < row; row_index++)
 				{
+					std::cout << row_index << std::endl;
+					/*if (row_index == 11)
+					{
+						vkCmdNextSubpass(drawCmdBuffers[i], VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
+					}*/
 					for (size_t column_index = 0; column_index < column; column_index++)
 					{
 						float sub_viewport_width = (width * 1.0) / column;
 						float sub_viewport_height = (height * 1.0) / row;
 
-						float sub_viewport_x = row_index * sub_viewport_width;
-						float sub_viewport_y = column_index * sub_viewport_height;
+						float sub_viewport_x = column_index * sub_viewport_width;
+						float sub_viewport_y = row_index * sub_viewport_height;
 
 						VkViewport sub_viewport = {};
 						{
@@ -240,7 +245,7 @@ public:
 					}
 				}
 			}
-			
+
 			drawUI(drawCmdBuffers[i]);
 
 			vkCmdEndRenderPass(drawCmdBuffers[i]);
