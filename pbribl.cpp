@@ -117,6 +117,11 @@ public:
 		VkRenderPass renderPass = VK_NULL_HANDLE;
 	}multiviewPass;
 
+	struct ImGuiPass
+	{
+		VkRenderPass renderPass = VK_NULL_HANDLE;
+	}imGuiPass;
+
 	VulkanExample() : VulkanExampleBase()
 	{
 		title = "PBR with image based lighting";
@@ -207,7 +212,6 @@ public:
 		renderPassBeginInfo.clearValueCount = 2;
 		renderPassBeginInfo.pClearValues = clearValues;
 
-
 		for (size_t i = 0; i < drawCmdBuffers.size(); ++i)
 		{
 			VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
@@ -253,81 +257,179 @@ public:
 					}
 				}
 
-				drawUI(drawCmdBuffers[i]);
+				//drawUI(drawCmdBuffers[i]);
 
 				vkCmdEndRenderPass(drawCmdBuffers[i]);
 			}
 
 			{
-				/*
-typedef struct VkImageBlit {
-	VkImageSubresourceLayers    srcSubresource;
-	VkOffset3D                  srcOffsets[2];
-	VkImageSubresourceLayers    dstSubresource;
-	VkOffset3D                  dstOffsets[2];
-} VkImageBlit;
-
-typedef struct VkImageSubresourceLayers {
-	VkImageAspectFlags    aspectMask;
-	uint32_t              mipLevel;
-	uint32_t              baseArrayLayer;
-	uint32_t              layerCount;
-} VkImageSubresourceLayers;
-
-typedef struct VkOffset3D {
-	int32_t    x;
-	int32_t    y;
-	int32_t    z;
-} VkOffset3D;
-				*/
-				VkImageBlit image_blit = {};
+				if (true)
 				{
-					image_blit.srcSubresource.aspectMask = VkImageAspectFlagBits::VK_IMAGE_ASPECT_COLOR_BIT;
-					image_blit.srcSubresource.mipLevel = 0;
-					image_blit.srcSubresource.baseArrayLayer = 0;
-					image_blit.srcSubresource.layerCount = 1;
+					float sub_viewport_width = (width * 1.0) / column;
+					float sub_viewport_height = (height * 1.0) / row;
 
-					image_blit.srcOffsets[0].x = 0;
-					image_blit.srcOffsets[0].y = 0;
-					image_blit.srcOffsets[0].z = 0;
-					image_blit.srcOffsets[1].x = width;
-					image_blit.srcOffsets[1].y = height;
-					image_blit.srcOffsets[1].z = 1;
+					uint32_t current_view_index = 0;
+					for (size_t multi_view_color_attachment_index = 0; multi_view_color_attachment_index < multiviewPass.colors.size(); multi_view_color_attachment_index++)
+					{
+						auto color_attachment_ref = multiviewPass.colors[multi_view_color_attachment_index];
+						auto used_array_layers = color_attachment_ref.usedArrayLayers;
+						VkImage blit_src_image = color_attachment_ref.image;
 
-					image_blit.dstSubresource.aspectMask = VkImageAspectFlagBits::VK_IMAGE_ASPECT_COLOR_BIT;
-					image_blit.dstSubresource.mipLevel = 0;
-					image_blit.dstSubresource.baseArrayLayer = 0;
-					image_blit.dstSubresource.layerCount = 1;
+						std::vector<VkImageBlit>sub_image_blits;
+						{
+							for (size_t used_array_layer = 0; used_array_layer < used_array_layers; used_array_layer++)
+							{
+								uint32_t row_index = current_view_index / column;
+								uint32_t column_index = current_view_index - row_index * column;
 
-					image_blit.dstOffsets[0].x = 0;
-					image_blit.dstOffsets[0].y = 0;
-					image_blit.dstOffsets[0].z = 0;
-					image_blit.dstOffsets[1].x = width * 0.5;
-					image_blit.dstOffsets[1].y = height * 0.5;
-					image_blit.dstOffsets[1].z = 1;
+								float sub_viewport_x = column_index * sub_viewport_width;
+								float sub_viewport_y = row_index * sub_viewport_height;
+
+								{
+									VkImageBlit sub_image_blit = {};
+									{
+										sub_image_blit.srcSubresource.aspectMask = VkImageAspectFlagBits::VK_IMAGE_ASPECT_COLOR_BIT;
+										sub_image_blit.srcSubresource.mipLevel = 0;
+										sub_image_blit.srcSubresource.baseArrayLayer = used_array_layer;
+										sub_image_blit.srcSubresource.layerCount = 1;
+
+										sub_image_blit.srcOffsets[0].x = 0;
+										sub_image_blit.srcOffsets[0].y = 0;
+										sub_image_blit.srcOffsets[0].z = 0;
+										sub_image_blit.srcOffsets[1].x = width;
+										sub_image_blit.srcOffsets[1].y = height;
+										sub_image_blit.srcOffsets[1].z = 1;
+
+										sub_image_blit.dstSubresource.aspectMask = VkImageAspectFlagBits::VK_IMAGE_ASPECT_COLOR_BIT;
+										sub_image_blit.dstSubresource.mipLevel = 0;
+										sub_image_blit.dstSubresource.baseArrayLayer = 0;
+										sub_image_blit.dstSubresource.layerCount = 1;
+
+										sub_image_blit.dstOffsets[0].x = sub_viewport_x;
+										sub_image_blit.dstOffsets[0].y = sub_viewport_y;
+										sub_image_blit.dstOffsets[0].z = 0;
+										sub_image_blit.dstOffsets[1].x = sub_image_blit.dstOffsets[0].x + sub_viewport_width;
+										sub_image_blit.dstOffsets[1].y = sub_image_blit.dstOffsets[0].y + sub_viewport_height;
+										sub_image_blit.dstOffsets[1].z = 1;
+									}
+
+									sub_image_blits.push_back(sub_image_blit);
+								}
+
+								{
+									current_view_index += 1;
+								}
+							}
+						}
+
+						vkCmdBlitImage(
+							drawCmdBuffers[i],
+							blit_src_image,
+							VkImageLayout::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							swapChain.buffers[i].image,
+							VkImageLayout::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+							sub_image_blits.size(),
+							sub_image_blits.data(),
+							VkFilter::VK_FILTER_LINEAR
+						);
+					}
 				}
+
+				if (false)
 				{
-					//command_buffer->CmdTransformImageLayout(Turbo::Core::TPipelineStageBits::TOP_OF_PIPE_BIT, Turbo::Core::TPipelineStageBits::TRANSFER_BIT, Turbo::Core::TAccessBits::ACCESS_NONE, Turbo::Core::TAccessBits::TRANSFER_WRITE_BIT, Turbo::Core::TImageLayout::UNDEFINED, Turbo::Core::TImageLayout::TRANSFER_DST_OPTIMAL, swpachain_framebuffers[current_image_index]->GetAttachments()[0]);
-					//device_driver->vkCmdBlitImage(vk_command_buffer, ray_tracing_image->GetVkImage(), VkImageLayout::VK_IMAGE_LAYOUT_GENERAL, swpachain_framebuffers[current_image_index]->GetAttachments()[0]->GetImage()->GetVkImage(), VkImageLayout::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &vk_image_blit, VkFilter::VK_FILTER_LINEAR);
-					//command_buffer->CmdTransformImageLayout(Turbo::Core::TPipelineStageBits::TRANSFER_BIT, Turbo::Core::TPipelineStageBits::COLOR_ATTACHMENT_OUTPUT_BIT, Turbo::Core::TAccessBits::ACCESS_NONE, Turbo::Core::TAccessBits::COLOR_ATTACHMENT_WRITE_BIT, Turbo::Core::TImageLayout::TRANSFER_DST_OPTIMAL, Turbo::Core::TImageLayout::COLOR_ATTACHMENT_OPTIMAL, swpachain_framebuffers[current_image_index]->GetAttachments()[0]);
-				}
+					std::vector<VkImageBlit>sub_image_blits;
+					{
+						VkImageBlit image_blit = {};
+						image_blit.srcSubresource.aspectMask = VkImageAspectFlagBits::VK_IMAGE_ASPECT_COLOR_BIT;
+						image_blit.srcSubresource.mipLevel = 0;
+						image_blit.srcSubresource.baseArrayLayer = 0;
+						image_blit.srcSubresource.layerCount = 1;
 
-				vkCmdBlitImage(
-					drawCmdBuffers[i],
-					multiviewPass.colors[0].image,
-					VkImageLayout::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-					swapChain.buffers[i].image,
-					VkImageLayout::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					1,
-					&image_blit,
-					VkFilter::VK_FILTER_LINEAR
-				);
+						image_blit.srcOffsets[0].x = 0;
+						image_blit.srcOffsets[0].y = 0;
+						image_blit.srcOffsets[0].z = 0;
+						image_blit.srcOffsets[1].x = width;
+						image_blit.srcOffsets[1].y = height;
+						image_blit.srcOffsets[1].z = 1;
+
+						image_blit.dstSubresource.aspectMask = VkImageAspectFlagBits::VK_IMAGE_ASPECT_COLOR_BIT;
+						image_blit.dstSubresource.mipLevel = 0;
+						image_blit.dstSubresource.baseArrayLayer = 0;
+						image_blit.dstSubresource.layerCount = 1;
+
+						image_blit.dstOffsets[0].x = 0;
+						image_blit.dstOffsets[0].y = 0;
+						image_blit.dstOffsets[0].z = 0;
+						image_blit.dstOffsets[1].x = width * 0.5;
+						image_blit.dstOffsets[1].y = height * 0.5;
+						image_blit.dstOffsets[1].z = 1;
+
+						sub_image_blits.push_back(image_blit);
+
+						image_blit.srcSubresource.baseArrayLayer = 1;
+						image_blit.dstOffsets[0].x = 100;
+						image_blit.dstOffsets[0].y = 100;
+						image_blit.dstOffsets[1].x = image_blit.dstOffsets[0].x + width * 0.5;
+						image_blit.dstOffsets[1].y = image_blit.dstOffsets[0].y + height * 0.5;
+						sub_image_blits.push_back(image_blit);
+
+						image_blit.srcSubresource.baseArrayLayer = 2;
+						image_blit.dstOffsets[0].x = 200;
+						image_blit.dstOffsets[0].y = 200;
+						image_blit.dstOffsets[1].x = image_blit.dstOffsets[0].x + width * 0.5;
+						image_blit.dstOffsets[1].y = image_blit.dstOffsets[0].y + height * 0.5;
+						sub_image_blits.push_back(image_blit);
+					}
+
+					vkCmdBlitImage(
+						drawCmdBuffers[i],
+						multiviewPass.colors[0].image,
+						VkImageLayout::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+						swapChain.buffers[i].image,
+						VkImageLayout::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						sub_image_blits.size(),
+						sub_image_blits.data(),
+						VkFilter::VK_FILTER_LINEAR
+					);
+				}
+			}
+
+			/*
+				ImGui
+			*/
+			{
+				VkClearValue clearValues[2];
+				clearValues[0].color = { { 0.1f, 0.1f, 0.1f, 1.0f } };
+				clearValues[1].depthStencil = { 1.0f, 0 };
+
+				VkRenderPassBeginInfo imgui_renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
+				//renderPassBeginInfo.renderPass = renderPass;
+				imgui_renderPassBeginInfo.renderPass = imGuiPass.renderPass;
+				imgui_renderPassBeginInfo.renderArea.offset.x = 0;
+				imgui_renderPassBeginInfo.renderArea.offset.y = 0;
+				imgui_renderPassBeginInfo.renderArea.extent.width = width;
+				imgui_renderPassBeginInfo.renderArea.extent.height = height;
+				imgui_renderPassBeginInfo.clearValueCount = 2;
+				imgui_renderPassBeginInfo.pClearValues = clearValues;
+				//imgui_renderPassBeginInfo.clearValueCount = 0;
+				//imgui_renderPassBeginInfo.pClearValues = nullptr;
+				imgui_renderPassBeginInfo.framebuffer = frameBuffers[i];
+
+				vkCmdBeginRenderPass(drawCmdBuffers[i], &imgui_renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+				VkViewport viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
+				vkCmdSetViewport(drawCmdBuffers[i], 0, 1, &viewport);
+
+				VkRect2D scissor = vks::initializers::rect2D(width, height, 0, 0);
+				vkCmdSetScissor(drawCmdBuffers[i], 0, 1, &scissor);
+
+				drawUI(drawCmdBuffers[i]);
+
+				vkCmdEndRenderPass(drawCmdBuffers[i]);
 			}
 
 			VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
 		}
-
-
 	}
 
 	void loadAssets()
@@ -1522,6 +1624,79 @@ typedef struct VkOffset3D {
 		return false;
 	}
 
+	bool prepareImGui()
+	{
+		{
+			std::array<VkAttachmentDescription, 2> attachments = {};
+			// Color attachment
+			attachments[0].format = swapChain.colorFormat;
+			attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+			attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+			attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+			attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			attachments[0].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			// Depth attachment
+			attachments[1].format = depthFormat;
+			attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+			attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+			//attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+			attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+			VkAttachmentReference colorReference = {};
+			colorReference.attachment = 0;
+			colorReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+			VkAttachmentReference depthReference = {};
+			depthReference.attachment = 1;
+			depthReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+			VkSubpassDescription subpassDescription = {};
+			subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+			subpassDescription.colorAttachmentCount = 1;
+			subpassDescription.pColorAttachments = &colorReference;
+			subpassDescription.pDepthStencilAttachment = &depthReference;
+
+			// Subpass dependencies for layout transitions
+			std::array<VkSubpassDependency, 2> dependencies;
+
+			dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[0].dstSubpass = 0;
+			dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+			dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+			dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+			dependencies[1].srcSubpass = 0;
+			dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+			dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+			dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+			dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+			VkRenderPassCreateInfo renderPassCI{};
+			renderPassCI.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+			renderPassCI.attachmentCount = static_cast<uint32_t>(attachments.size());
+			renderPassCI.pAttachments = attachments.data();
+			renderPassCI.subpassCount = 1;
+			renderPassCI.pSubpasses = &subpassDescription;
+			renderPassCI.dependencyCount = static_cast<uint32_t>(dependencies.size());
+			renderPassCI.pDependencies = dependencies.data();
+
+			VK_CHECK_RESULT(vkCreateRenderPass(device, &renderPassCI, nullptr, &imGuiPass.renderPass));
+
+			return true;
+		}
+		return false;
+	}
+
 	bool prepareMultiview()
 	{
 		auto check_row_and_column = [&]()->bool
@@ -1906,6 +2081,8 @@ typedef struct VkOffset3D {
 	void prepare()
 	{
 		VulkanExampleBase::prepare();
+
+		prepareImGui();
 
 		{
 			if (!checkMultiview())
