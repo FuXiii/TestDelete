@@ -254,9 +254,13 @@ public:
 							mat.params.roughness = 1.0f - glm::clamp((float)x / (float)objcount, 0.005f, 1.0f);
 							mat.params.metallic = glm::clamp((float)x / (float)objcount, 0.005f, 1.0f);
 
+							Camera temp_camera = camera;
+							temp_camera.setPosition(camera.position + glm::vec3(row_index * 10, column_index * 10, 0));
+
 							PushConstStruct pcs;
 							pcs.pos = pos;
-							pcs.view = camera.matrices.view;
+							//pcs.view = camera.matrices.view;
+							pcs.view = temp_camera.matrices.view;
 
 							vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstStruct), &pcs);
 							vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(PushConstStruct), sizeof(Material::PushBlock), &mat);
