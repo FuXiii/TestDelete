@@ -13,8 +13,8 @@
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
 
-std::size_t row = 10;
-std::size_t column = 10;
+std::size_t row = 2;
+std::size_t column = 2;
 
 struct Material {
 	// Parameter block used as push constant block
@@ -81,6 +81,13 @@ public:
 		VkDescriptorSet skybox{ VK_NULL_HANDLE };
 	} descriptorSets;
 
+	struct PushConstStruct
+	{
+		glm::vec3 pos;
+		char padding[4];
+		glm::mat4 view;
+	};
+
 	VkPipelineLayout pipelineLayout{ VK_NULL_HANDLE };
 	VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };
 
@@ -143,6 +150,13 @@ public:
 			textures.lutBrdf.destroy();
 		}
 	}
+
+	//void mouseMoved(double x, double y, bool& handled) {
+	//	if (prepared)
+	//	{
+	//		this->buildCommandBuffers();
+	//	}
+	//}
 
 	virtual void getEnabledFeatures()
 	{
@@ -239,8 +253,13 @@ public:
 							glm::vec3 pos = glm::vec3(float(x - (objcount / 2.0f)) * 2.15f, 0.0f, 0.0f);
 							mat.params.roughness = 1.0f - glm::clamp((float)x / (float)objcount, 0.005f, 1.0f);
 							mat.params.metallic = glm::clamp((float)x / (float)objcount, 0.005f, 1.0f);
-							vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::vec3), &pos);
-							vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(glm::vec3), sizeof(Material::PushBlock), &mat);
+
+							PushConstStruct pcs;
+							pcs.pos = pos;
+							pcs.view = camera.matrices.view;
+
+							vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstStruct), &pcs);
+							vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(PushConstStruct), sizeof(Material::PushBlock), &mat);
 							models.objects[models.objectIndex].draw(drawCmdBuffers[i]);
 						}
 					}
@@ -356,8 +375,8 @@ public:
 		VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = vks::initializers::pipelineLayoutCreateInfo(&descriptorSetLayout, 1);
 		// Push constant ranges
 		std::vector<VkPushConstantRange> pushConstantRanges = {
-			vks::initializers::pushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, sizeof(glm::vec3), 0),
-			vks::initializers::pushConstantRange(VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(Material::PushBlock), sizeof(glm::vec3)),
+			vks::initializers::pushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushConstStruct), 0),
+			vks::initializers::pushConstantRange(VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(Material::PushBlock), sizeof(PushConstStruct)),
 		};
 		pipelineLayoutCreateInfo.pushConstantRangeCount = 2;
 		pipelineLayoutCreateInfo.pPushConstantRanges = pushConstantRanges.data();
@@ -1400,6 +1419,11 @@ public:
 		// Skybox
 		uboMatrices.model = glm::mat4(glm::mat3(camera.matrices.view));
 		memcpy(uniformBuffers.skybox.mapped, &uboMatrices, sizeof(uboMatrices));
+
+		if (prepared)
+		{
+			this->buildCommandBuffers();
+		}
 	}
 
 	void updateParams()
