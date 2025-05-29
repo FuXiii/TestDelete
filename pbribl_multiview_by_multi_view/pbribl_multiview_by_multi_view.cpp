@@ -13,8 +13,8 @@
 #include "vulkanexamplebase.h"
 #include "VulkanglTFModel.h"
 
-std::size_t row = 10;
-std::size_t column = 10;
+std::size_t row = 6;
+std::size_t column = 6;
 
 struct Material {
 	// Parameter block used as push constant block
@@ -56,6 +56,7 @@ public:
 		vks::Buffer object;
 		vks::Buffer skybox;
 		vks::Buffer params;
+		vks::Buffer views;
 	} uniformBuffers;
 
 	struct UBOMatrices {
@@ -80,6 +81,14 @@ public:
 		VkDescriptorSet object{ VK_NULL_HANDLE };
 		VkDescriptorSet skybox{ VK_NULL_HANDLE };
 	} descriptorSets;
+
+	struct PushConstStruct
+	{
+		glm::vec3 pos;
+		int offset;
+	};
+
+	std::array<glm::mat4, 500> views;
 
 	VkPipelineLayout pipelineLayout{ VK_NULL_HANDLE };
 	VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };
@@ -181,6 +190,7 @@ public:
 			uniformBuffers.object.destroy();
 			uniformBuffers.skybox.destroy();
 			uniformBuffers.params.destroy();
+			uniformBuffers.views.destroy();
 			textures.environmentCube.destroy();
 			textures.irradianceCube.destroy();
 			textures.prefilteredCube.destroy();
@@ -252,8 +262,13 @@ public:
 						glm::vec3 pos = glm::vec3(float(x - (objcount / 2.0f)) * 2.15f, 0.0f, 0.0f);
 						mat.params.roughness = 1.0f - glm::clamp((float)x / (float)objcount, 0.005f, 1.0f);
 						mat.params.metallic = glm::clamp((float)x / (float)objcount, 0.005f, 1.0f);
-						vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::vec3), &pos);
-						vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(glm::vec3), sizeof(Material::PushBlock), &mat);
+
+						PushConstStruct pcs;
+						pcs.pos = pos;
+						pcs.offset = frame_buffer_index;
+
+						vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstStruct), &pcs);
+						vkCmdPushConstants(drawCmdBuffers[i], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(PushConstStruct), sizeof(Material::PushBlock), &mat);
 						models.objects[models.objectIndex].draw(drawCmdBuffers[i]);
 					}
 				}
@@ -439,7 +454,7 @@ public:
 		// Skybox
 		models.skybox.loadFromFile(getAssetPath() + "models/cube.gltf", vulkanDevice, queue, glTFLoadingFlags);
 		// Objects
-		std::vector<std::string> filenames = { "sphere.gltf", "teapot.gltf", "torusknot.gltf", "venus.gltf" ,"deer.gltf"};
+		std::vector<std::string> filenames = { "sphere.gltf", "teapot.gltf", "torusknot.gltf", "venus.gltf" ,"deer.gltf" };
 		models.objects.resize(filenames.size());
 		for (size_t i = 0; i < filenames.size(); i++) {
 			models.objects[i].loadFromFile(getAssetPath() + "models/" + filenames[i], vulkanDevice, queue, glTFLoadingFlags);
@@ -452,7 +467,7 @@ public:
 	{
 		// Descriptor Pool
 		std::vector<VkDescriptorPoolSize> poolSizes = {
-			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4),
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10),
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,10)
 		};
 		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 2);
@@ -466,13 +481,14 @@ public:
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 3),
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 4),
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 5),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT, 6),
 		};
 		VkDescriptorSetLayoutCreateInfo descriptorLayout = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorLayout, nullptr, &descriptorSetLayout));
 
 		// Descriptor sets
 		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayout, 1);
-		
+
 		VkDescriptorImageInfo diffuse_descriptor_image_info = {};
 		diffuse_descriptor_image_info.sampler = textures.lutBrdf.descriptor.sampler;
 		diffuse_descriptor_image_info.imageView = models.objects.back().textures.front().view;
@@ -487,6 +503,7 @@ public:
 			vks::initializers::writeDescriptorSet(descriptorSets.object, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3, &textures.lutBrdf.descriptor),
 			vks::initializers::writeDescriptorSet(descriptorSets.object, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4, &textures.prefilteredCube.descriptor),
 			vks::initializers::writeDescriptorSet(descriptorSets.object, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5, &diffuse_descriptor_image_info),
+			vks::initializers::writeDescriptorSet(descriptorSets.object, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 6, &uniformBuffers.views.descriptor),
 		};
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, NULL);
 
@@ -534,8 +551,8 @@ public:
 		VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = vks::initializers::pipelineLayoutCreateInfo(&descriptorSetLayout, 1);
 		// Push constant ranges
 		std::vector<VkPushConstantRange> pushConstantRanges = {
-			vks::initializers::pushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, sizeof(glm::vec3), 0),
-			vks::initializers::pushConstantRange(VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(Material::PushBlock), sizeof(glm::vec3)),
+			vks::initializers::pushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, sizeof(PushConstStruct), 0),
+			vks::initializers::pushConstantRange(VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(Material::PushBlock), sizeof(PushConstStruct)),
 		};
 		pipelineLayoutCreateInfo.pushConstantRangeCount = 2;
 		pipelineLayoutCreateInfo.pPushConstantRanges = pushConstantRanges.data();
@@ -562,8 +579,8 @@ public:
 		VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipelines.skybox));
 
 		// PBR pipeline
-		shaderStages[0] = loadShader(getShadersPath() + "pbribl/pbribl.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
-		shaderStages[1] = loadShader(getShadersPath() + "pbribl/pbribl.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+		shaderStages[0] = loadShader(getShadersPath() + "pbribl/pbribl_mv.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+		shaderStages[1] = loadShader(getShadersPath() + "pbribl/pbribl_mv.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 		// Enable depth test and write
 		depthStencilState.depthWriteEnable = VK_TRUE;
 		depthStencilState.depthTestEnable = VK_TRUE;
@@ -1557,10 +1574,17 @@ public:
 			&uniformBuffers.params,
 			sizeof(uboParams)));
 
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&uniformBuffers.views,
+			this->views.size() * sizeof(glm::mat4)));
+
 		// Map persistent
 		VK_CHECK_RESULT(uniformBuffers.object.map());
 		VK_CHECK_RESULT(uniformBuffers.skybox.map());
 		VK_CHECK_RESULT(uniformBuffers.params.map());
+		VK_CHECK_RESULT(uniformBuffers.views.map());
 
 		updateUniformBuffers();
 		updateParams();
@@ -1578,6 +1602,14 @@ public:
 		// Skybox
 		uboMatrices.model = glm::mat4(glm::mat3(camera.matrices.view));
 		memcpy(uniformBuffers.skybox.mapped, &uboMatrices, sizeof(uboMatrices));
+
+		// Views
+		for (size_t i = 0; i < this->views.size(); i++)
+		{
+			this->views[i] = camera.matrices.view;
+		}
+
+		memcpy(uniformBuffers.views.mapped, views.data(), this->views.size() * sizeof(glm::mat4));
 	}
 
 	void updateParams()
@@ -1588,7 +1620,7 @@ public:
 		uboParams.lights[2] = glm::vec4(p, -p * 0.5f, p, 1.0f);
 		uboParams.lights[3] = glm::vec4(p, -p * 0.5f, -p, 1.0f);
 
-		memcpy(uniformBuffers.params.mapped, &uboParams, sizeof(uboParams));
+		memcpy(uniformBuffers.params.mapped, &uboParams, this->views.size() * sizeof(glm::mat4));
 	}
 
 	bool checkMultiview()
